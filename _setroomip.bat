@@ -1,0 +1,1 @@
+netsh interface ip set address "Local Area Connection" static 172.24.49.100 255.255.248.0 172.24.55.254

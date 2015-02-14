@@ -1,0 +1,2 @@
+@echo off
+pythonw "C:\path_shortcuts\firewall-auth.py" ghoshs nature89
