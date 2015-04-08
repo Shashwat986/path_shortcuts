@@ -1,1 +1,1 @@
-cd "C:\Users\Shashwat\Desktop\haji"
+cd "C:\Users\Shashwat\Desktop\haji-complete"

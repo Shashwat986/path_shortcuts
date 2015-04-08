@@ -34,7 +34,8 @@ import logging
 import time
 import atexit
 import socket
-import base64
+import gc
+import netrc
 
 class FirewallState:
   Start, LoggedIn, End = range(3)
@@ -157,50 +158,36 @@ def login():
     conn = httplib.HTTPConnection("74.125.236.51:80")
     conn.request("GET", "/")
     response = conn.getresponse()
-
-    # 307 means we are getting redirected to ironport
     # 303 leads to the auth page, so it means we're not logged in
-    if (response.status not in [303,307]):
+    if (response.status != 303):
       return (LoginState.AlreadyLoggedIn, response.status)
-    if (response.status == 303):
-      #ironport
-      proxy_type = 0
-    else:
-      #http-auth
-      proxy_type = 1
-    
+
     authlocation = response.getheader("Location")
   finally:
     conn.close()
 
   logger.info("The auth location is: %s" % authlocation)
 
-  # If we have reached ironport
-  if (proxy_type == 0):
-    creds = base64.encodestring(username + ":" + password)
-    params = urllib.urlencode({})
-    headers = {'Authorization' : 'Basic ' + creds}
-  else:
-    # Make a connection to the auth location
-    parsedauthloc = urlparse.urlparse(authlocation)
-    try:
-        authconn = httplib.HTTPSConnection(parsedauthloc.netloc)
-        authconn.request("GET", parsedauthloc.path + "?" + parsedauthloc.query)
-        authResponse = authconn.getresponse()
-        data = authResponse.read()
-    finally:
-        authconn.close()
-    
-    # Look for the right magic value in the data
-    match = re.search(r"value=\"([0-9a-f]+)\"", data)
-    magicString = match.group(1)
-    logger.debug("The magic string is: " + magicString)
-  
-    # Now construct a POST request
-    params = urllib.urlencode({'username': username, 'password': password,
-                               'magic': magicString, '4Tredir': '/'})
-    headers = {"Content-Type": "application/x-www-form-urlencoded",
-               "Accept": "text/plain"}
+  # Make a connection to the auth location
+  parsedauthloc = urlparse.urlparse(authlocation)
+  try:
+    authconn = httplib.HTTPSConnection(parsedauthloc.netloc)
+    authconn.request("GET", parsedauthloc.path + "?" + parsedauthloc.query)
+    authResponse = authconn.getresponse()
+    data = authResponse.read()
+  finally:
+    authconn.close()
+
+  # Look for the right magic value in the data
+  match = re.search(r"VALUE=\"([0-9a-f]+)\"", data, re.IGNORECASE)
+  magicString = match.group(1)
+  logger.debug("The magic string is: " + magicString)
+
+  # Now construct a POST request
+  params = urllib.urlencode({'username': username, 'password': password,
+                             'magic': magicString, '4Tredir': '/'})
+  headers = {"Content-Type": "application/x-www-form-urlencoded",
+             "Accept": "text/plain"}
 
   try:
     postconn = httplib.HTTPSConnection(parsedauthloc.netloc)
@@ -211,32 +198,19 @@ def login():
     postData = postResponse.read()
   finally:
     postconn.close()
-  if proxy_type == 0:
-    # See if redirects
-    try:
-        conn = httplib.HTTPConnection("74.125.236.51:80")
-        conn.request("GET", "/")
-        response = conn.getresponse()
-        if (response.status == 200):
-            return (LoginState.AlreadyLoggedIn, response.status)
-            #return (LoginState.Successful, response.status)
-    finally:
-        conn.close()
-    return (LoginState.AlreadyLoggedIn, response.status)
-  
-  else:
-    # Look for the keepalive URL
-    keepaliveMatch = re.search(r"location.href=\"(.+?)\"", postData)
-    if keepaliveMatch is None:
-        # Whoops, unsuccessful -- probably the username and password didn't match
-        logger.fatal("Authentication unsuccessful, check your username and password.")
-        return (LoginState.InvalidCredentials, None)
 
-    keepaliveURL = keepaliveMatch.group(1)
+  # Look for the keepalive URL
+  keepaliveMatch = re.search(r"location.href=\"(.+?)\"", postData)
+  if keepaliveMatch is None:
+    # Whoops, unsuccessful -- probably the username and password didn't match
+    logger.fatal("Authentication unsuccessful, check your username and password.")
+    return (LoginState.InvalidCredentials, None)
 
-    logger.info("The keep alive URL is: " + keepaliveURL)
-    logger.debug(postData)
-    return (LoginState.Successful, urlparse.urlparse(keepaliveURL))
+  keepaliveURL = keepaliveMatch.group(1)
+
+  logger.info("The keep alive URL is: " + keepaliveURL)
+  logger.debug(postData)
+  return (LoginState.Successful, urlparse.urlparse(keepaliveURL))
 
 def keep_alive(url):
   """
@@ -256,12 +230,26 @@ def keep_alive(url):
     logger.debug(response.read())
   finally:
     conn.close()
+    gc.collect()
 
-def get_credentials(args):
+def get_credentials(options, args):
   """
-  Get the username and password, either from command line args or interactively.
+  Get the username and password, from netrc, command line args or interactively.
   """
   username = None
+  password = None
+
+  if options.netrc:
+    logger = logging.getLogger("FirewallLogger")
+    try:
+      info = netrc.netrc()
+      cred = info.authenticators("172.31.1.251")
+      if cred:
+        return (cred[0], cred[2])
+      logger.info("Could not find credentials in netrc file.")
+    except:
+      logger.info("Could not read from netrc file.")
+
   if len(args) == 0:
     # Get the username from the input
     print "Username: ",
@@ -270,7 +258,6 @@ def get_credentials(args):
     # First member of args
     username = args[0]
 
-  password = None
   if len(args) <= 1:
     # Read the password without echoing it
     password = getpass.getpass()
@@ -304,6 +291,8 @@ def main(argv = None):
   parser = OptionParser(usage = usage)
   parser.add_option("-v", "--verbose", action = "store_true", dest = "verbose",
                     help = "Print lots of debugging information")
+  parser.add_option("-n", "--netrc", action = "store_true", dest = "netrc",
+                    help = "Read credentials from netrc file")
 
   # Parse arguments
   (options, args) = parser.parse_args(argv)
@@ -316,7 +305,7 @@ def main(argv = None):
 
   # Try authenticating!
   global username, password
-  username, password = get_credentials(args)
+  username, password = get_credentials(options, args)
   run_state_machine()
   return 0
 
