@@ -177,6 +177,7 @@ def login():
 
   # If we have reached ironport
   if (proxy_type == 0):
+    parsedauthloc = urlparse.urlparse(authlocation)
     creds = base64.encodestring(username + ":" + password)
     params = urllib.urlencode({})
     headers = {'Authorization' : 'Basic ' + creds}

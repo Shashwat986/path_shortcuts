@@ -1,2 +1,2 @@
 @echo off
-python "C:\path_shortcuts\firewall-auth.py" ghoshs nature89
+python "C:\path_shortcuts\firewall-auth0.py" cseguest natraj25
